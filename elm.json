@@ -14,7 +14,9 @@
         "indirect": {
             "elm/time": "1.0.0",
             "elm/url": "1.0.0",
-            "elm/virtual-dom": "1.0.0"
+            "elm/virtual-dom": "1.0.0",
+	    "lovasoa/elm-csv": "1.1.5"
+
         }
     },
     "test-dependencies": {
