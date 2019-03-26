@@ -202,7 +202,6 @@ view : Model -> Html Msg
 view model =
     div
         [ class "todomvc-wrapper"
-        , style "visibility" "hidden"
         ]
         [ section
             [ class "todoapp" ]
@@ -224,7 +223,6 @@ viewUpload =
             , on "change" (D.map Import filesDecoder)
             ]
             []
-        , div [] [ text (Debug.toString Model) ]
         ]
 
 viewInput : String -> Html Msg
