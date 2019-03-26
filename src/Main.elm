@@ -12,28 +12,29 @@ This clean division of concerns is a core part of Elm. You can read more about
 this in <http://guide.elm-lang.org/architecture/index.html>
 -}
 
+import Iso8601
+import Time
 import Browser
 import Browser.Dom as Dom
 import Html exposing (..)
+import File exposing (File)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
 import Html.Keyed as Keyed
 import Html.Lazy exposing (lazy, lazy2)
-import Json.Decode as Json
+import Json.Decode as D
 import Task
 
-
-main : Program (Maybe Model) Model Msg
+main : Program () Model Msg
 main =
     Browser.document
         { init = init
-        , view = \model -> { title = "Elm • TodoMVC", body = [view model] }
+        , view = \model -> { title = "Elmentory • Inventory Control", body = [view model] }
         , update = updateWithStorage
         , subscriptions = \_ -> Sub.none
         }
 
-
-port setStorage : Model -> Cmd msg
+port setStorage : List Row -> Cmd msg
 
 
 {-| We want to `setStorage` on every update. This function adds the setStorage
@@ -46,76 +47,114 @@ updateWithStorage msg model =
             update msg model
     in
         ( newModel
-        , Cmd.batch [ setStorage newModel, cmds ]
+        , Cmd.batch [ setStorage newModel.entries, cmds ]
         )
 
 
+-- Boilerplate
+type alias Error = String
 
--- MODEL
+-- Primary key; product ID
+type alias ProductId = Int
 
+type alias Barcode =
+    { product: ProductId
+    , num: Int
+    }
 
--- The full application state of our todo app.
+-- Data of each row
+type alias Row =
+    { distributor : Int
+    , date: Int
+    , product: ProductId
+    , description: String
+    , cs_price: Float
+    , ea_price: Float
+    , ncs: Int
+    , nea: Int
+    , eprice: Float
+    , order: Int
+    , is_ordered: Bool
+    , is_received: Bool
+    , is_used: Bool
+    }
+
+type Status = Incoming | Outgoing
+
 type alias Model =
-    { entries : List Entry
+    { entries : List Row
     , field : String
-    , uid : Int
-    , visibility : String
+    , files : List File
+    , visibility: String
     }
-
-
-type alias Entry =
-    { description : String
-    , completed : Bool
-    , editing : Bool
-    , id : Int
-    }
-
 
 emptyModel : Model
 emptyModel =
     { entries = []
     , visibility = "All"
     , field = ""
-    , uid = 0
+    , files = []
     }
 
-
-newEntry : String -> Int -> Entry
-newEntry desc id =
-    { description = desc
-    , completed = False
-    , editing = False
-    , id = id
+-- New entry
+newEntry : ProductId -> Row
+newEntry prod =
+    { distributor = 0
+    , date = 0
+    , product = prod
+    , description = "<Placeholder>"
+    , cs_price = 0.0
+    , ea_price = 0.0
+    , ncs = 0
+    , nea = 0
+    , eprice = 0.0
+    , order = 0
+    , is_ordered = False
+    , is_received = False
+    , is_used = False
     }
 
+-- ISO Time
+parseTime : String -> Time.Posix
+parseTime string =
+    Iso8601.toTime string
+        |> Result.withDefault (Time.millisToPosix 0)
 
-init : Maybe Model -> ( Model, Cmd Msg )
-init maybeModel =
-  ( Maybe.withDefault emptyModel maybeModel
+-- Get description from product ID
+getDescription : List Row -> ProductId -> Result Error String
+getDescription entries prod =
+    case entries of
+        (row::tail) ->
+            if row.product == prod then
+                Ok row.description
+            else
+                getDescription tail prod
+        ([]) -> Err <| "Product ID " ++ String.fromInt prod ++ " not found in inventory"
+
+
+-- Give the current batch a description for each item
+--updateBatch : Model -> Batch ProductId -> Batch (ProductId, String)
+--updateBatch model {action, items} =
+--    case batch of
+init : () -> ( Model, Cmd Msg )
+init _ =
+  ( emptyModel
   , Cmd.none
   )
 
-
-
 -- UPDATE
-
-
 {-| Users of our app can trigger messages by clicking and typing. These
 messages are fed into the `update` function as they occur, letting us react
 to them.
 -}
 type Msg
     = NoOp
+    | Import (List File)
+    | Scan
     | UpdateField String
-    | EditingEntry Int Bool
-    | UpdateEntry Int String
-    | Add
     | Delete Int
-    | DeleteComplete
-    | Check Int Bool
-    | CheckAll Bool
     | ChangeVisibility String
-
+    | Done
 
 
 -- How we update our Model on a given Msg?
@@ -123,92 +162,40 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         NoOp ->
-            ( model, Cmd.none )
-
-        Add ->
+            (model, Cmd.none)
+        Import files ->
+            ({model | files = files} , Cmd.none)
+        Scan ->
             ( { model
-                | uid = model.uid + 1
-                , field = ""
+                | field = ""
                 , entries =
                     if String.isEmpty model.field then
                         model.entries
                     else
-                        model.entries ++ [ newEntry model.field model.uid ]
+                        model.entries ++ [ newEntry << Maybe.withDefault 0 << String.toInt <| model.field ]
               }
             , Cmd.none
             )
-
         UpdateField str ->
             ( { model | field = str }
             , Cmd.none
             )
-
-        EditingEntry id isEditing ->
-            let
-                updateEntry t =
-                    if t.id == id then
-                        { t | editing = isEditing }
-                    else
-                        t
-
-                focus =
-                    Dom.focus ("todo-" ++ String.fromInt id)
-            in
-            ( { model | entries = List.map updateEntry model.entries }
-            , Task.attempt (\_ -> NoOp) focus
-            )
-
-        UpdateEntry id task ->
-            let
-                updateEntry t =
-                    if t.id == id then
-                        { t | description = task }
-                    else
-                        t
-            in
-            ( { model | entries = List.map updateEntry model.entries }
+        Delete prod ->
+            ( { model | entries = List.filter (\t -> t.product /= prod) model.entries }
             , Cmd.none
             )
-
-        Delete id ->
-            ( { model | entries = List.filter (\t -> t.id /= id) model.entries }
-            , Cmd.none
-            )
-
-        DeleteComplete ->
-            ( { model | entries = List.filter (not << .completed) model.entries }
-            , Cmd.none
-            )
-
-        Check id isCompleted ->
-            let
-                updateEntry t =
-                    if t.id == id then
-                        { t | completed = isCompleted }
-                    else
-                        t
-            in
-            ( { model | entries = List.map updateEntry model.entries }
-            , Cmd.none
-            )
-
-        CheckAll isCompleted ->
-            let
-                updateEntry t =
-                    { t | completed = isCompleted }
-            in
-            ( { model | entries = List.map updateEntry model.entries }
-            , Cmd.none
-            )
-
         ChangeVisibility visibility ->
             ( { model | visibility = visibility }
             , Cmd.none
             )
-
+        Done -> -- TODO: SQL integration
+            (model, Cmd.none)
 
 
 -- VIEW
+filesDecoder : D.Decoder (List File)
+filesDecoder =
+  D.at ["target","files"] (D.list File.decoder)
 
 
 view : Model -> Html Msg
@@ -219,203 +206,89 @@ view model =
         ]
         [ section
             [ class "todoapp" ]
-            [ lazy viewInput model.field
+            [ lazy (\_ -> viewUpload) 0
+            , lazy viewInput model.field
             , lazy2 viewEntries model.visibility model.entries
-            , lazy2 viewControls model.visibility model.entries
             ]
         , infoFooter
         ]
 
+viewUpload : Html Msg
+viewUpload =
+    section
+        [ class "main"
+        ]
+        [ input
+            [ type_ "file"
+            , multiple True
+            , on "change" (D.map Import filesDecoder)
+            ]
+            []
+        , div [] [ text (Debug.toString Model) ]
+        ]
 
 viewInput : String -> Html Msg
 viewInput task =
     header
         [ class "header" ]
-        [ h1 [] [ text "todos" ]
+        [ h1 [] [ text "Products" ]
         , input
             [ class "new-todo"
-            , placeholder "What needs to be done?"
+            , placeholder "Scan some items"
             , autofocus True
             , value task
             , name "newTodo"
             , onInput UpdateField
-            , onEnter Add
+            , onEnter Scan
             ]
             []
         ]
-
 
 onEnter : Msg -> Attribute Msg
 onEnter msg =
     let
         isEnter code =
             if code == 13 then
-                Json.succeed msg
+                D.succeed msg
             else
-                Json.fail "not ENTER"
+                D.fail "not ENTER"
     in
-        on "keydown" (Json.andThen isEnter keyCode)
-
+        on "keydown" (D.andThen isEnter keyCode)
 
 
 -- VIEW ALL ENTRIES
-
-
-viewEntries : String -> List Entry -> Html Msg
+viewEntries : String -> List Row -> Html Msg
 viewEntries visibility entries =
-    let
-        isVisible todo =
-            case visibility of
-                "Completed" ->
-                    todo.completed
-
-                "Active" ->
-                    not todo.completed
-
-                _ ->
-                    True
-
-        allCompleted =
-            List.all .completed entries
-
-        cssVisibility =
-            if List.isEmpty entries then
-                "hidden"
-            else
-                "visible"
-    in
         section
             [ class "main"
-            , style "visibility" cssVisibility
             ]
-            [ input
-                [ class "toggle-all"
-                , type_ "checkbox"
-                , name "toggle"
-                , checked allCompleted
-                , onClick (CheckAll (not allCompleted))
-                ]
-                []
-            , label
-                [ for "toggle-all" ]
-                [ text "Mark all as complete" ]
-            , Keyed.ul [ class "todo-list" ] <|
-                List.map viewKeyedEntry (List.filter isVisible entries)
+            [ Keyed.ul [ class "todo-list" ] <|
+                List.map viewKeyedEntry entries
             ]
 
 
 
 -- VIEW INDIVIDUAL ENTRIES
-
-
-viewKeyedEntry : Entry -> ( String, Html Msg )
+viewKeyedEntry : Row -> ( String, Html Msg )
 viewKeyedEntry todo =
-    ( String.fromInt todo.id, lazy viewEntry todo )
+    ( String.fromInt todo.product, lazy viewEntry todo )
 
 
-viewEntry : Entry -> Html Msg
+viewEntry : Row -> Html Msg
 viewEntry todo =
     li
-        [ classList [ ( "completed", todo.completed ), ( "editing", todo.editing ) ] ]
+        []
         [ div
             [ class "view" ]
-            [ input
-                [ class "toggle"
-                , type_ "checkbox"
-                , checked todo.completed
-                , onClick (Check todo.id (not todo.completed))
-                ]
+            [ label
                 []
-            , label
-                [ onDoubleClick (EditingEntry todo.id True) ]
                 [ text todo.description ]
             , button
                 [ class "destroy"
-                , onClick (Delete todo.id)
+                , onClick (Delete todo.product)
                 ]
                 []
             ]
-        , input
-            [ class "edit"
-            , value todo.description
-            , name "title"
-            , id ("todo-" ++ String.fromInt todo.id)
-            , onInput (UpdateEntry todo.id)
-            , onBlur (EditingEntry todo.id False)
-            , onEnter (EditingEntry todo.id False)
-            ]
-            []
-        ]
-
-
-
--- VIEW CONTROLS AND FOOTER
-
-
-viewControls : String -> List Entry -> Html Msg
-viewControls visibility entries =
-    let
-        entriesCompleted =
-            List.length (List.filter .completed entries)
-
-        entriesLeft =
-            List.length entries - entriesCompleted
-    in
-        footer
-            [ class "footer"
-            , hidden (List.isEmpty entries)
-            ]
-            [ lazy viewControlsCount entriesLeft
-            , lazy viewControlsFilters visibility
-            , lazy viewControlsClear entriesCompleted
-            ]
-
-
-viewControlsCount : Int -> Html Msg
-viewControlsCount entriesLeft =
-    let
-        item_ =
-            if entriesLeft == 1 then
-                " item"
-            else
-                " items"
-    in
-        span
-            [ class "todo-count" ]
-            [ strong [] [ text (String.fromInt entriesLeft) ]
-            , text (item_ ++ " left")
-            ]
-
-
-viewControlsFilters : String -> Html Msg
-viewControlsFilters visibility =
-    ul
-        [ class "filters" ]
-        [ visibilitySwap "#/" "All" visibility
-        , text " "
-        , visibilitySwap "#/active" "Active" visibility
-        , text " "
-        , visibilitySwap "#/completed" "Completed" visibility
-        ]
-
-
-visibilitySwap : String -> String -> String -> Html Msg
-visibilitySwap uri visibility actualVisibility =
-    li
-        [ onClick (ChangeVisibility visibility) ]
-        [ a [ href uri, classList [ ( "selected", visibility == actualVisibility ) ] ]
-            [ text visibility ]
-        ]
-
-
-viewControlsClear : Int -> Html Msg
-viewControlsClear entriesCompleted =
-    button
-        [ class "clear-completed"
-        , hidden (entriesCompleted == 0)
-        , onClick DeleteComplete
-        ]
-        [ text ("Clear completed (" ++ String.fromInt entriesCompleted ++ ")")
         ]
 
 
