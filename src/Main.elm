@@ -21,7 +21,7 @@ import File exposing (File)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
 import Html.Keyed as Keyed
-import Html.Lazy exposing (lazy, lazy2)
+import Html.Lazy exposing (..)
 import Json.Decode as D
 import Task
 
@@ -82,7 +82,8 @@ type alias Row =
 type Status = Incoming | Outgoing
 
 type alias Model =
-    { entries : List Row
+    { scanned : List Barcode
+    , entries : List Row
     , field : String
     , files : List File
     , visibility: String
@@ -90,19 +91,20 @@ type alias Model =
 
 emptyModel : Model
 emptyModel =
-    { entries = []
+    { scanned = []
+    , entries = []
     , visibility = "All"
     , field = ""
     , files = []
     }
 
--- New entry
-newEntry : ProductId -> Row
-newEntry prod =
+-- Row functionality
+emptyRow : Row
+emptyRow =
     { distributor = 0
     , date = 0
-    , product = prod
-    , description = "<Placeholder>"
+    , product = 0
+    , description = ""
     , cs_price = 0.0
     , ea_price = 0.0
     , ncs = 0
@@ -113,6 +115,46 @@ newEntry prod =
     , is_received = False
     , is_used = False
     }
+
+-- Barcode functionality
+emptyBarcode : Barcode
+emptyBarcode = { product = 0, num = 0 }
+
+parseBarcode : String -> Maybe Barcode
+parseBarcode prod =
+    let
+        num = Maybe.withDefault 0 << String.toInt << String.right 2 <| prod
+        getProduct = String.toInt << String.slice 5 12
+    in
+        Just prod
+            |> Maybe.andThen getProduct
+            |> Maybe.andThen (\id -> Just { product = id, num = num })
+
+showBarcode : Barcode -> String
+showBarcode bar = String.fromInt bar.product ++ " #" ++ String.fromInt bar.num
+
+fromBarcode : Barcode -> Row
+fromBarcode barcode =
+    { distributor = 0
+    , date = 0
+    , product = barcode.product
+    , description = String.fromInt barcode.product
+    , cs_price = 0.0
+    , ea_price = 0.0
+    , ncs = 0
+    , nea = 0
+    , eprice = 0.0
+    , order = 0
+    , is_ordered = True
+    , is_received = True
+    , is_used = False
+    }
+
+-- JSON decoder
+filesDecoder : D.Decoder (List File)
+filesDecoder =
+  D.at ["target","files"] (D.list File.decoder)
+
 
 -- ISO Time
 parseTime : String -> Time.Posix
@@ -168,11 +210,11 @@ update msg model =
         Scan ->
             ( { model
                 | field = ""
-                , entries =
+                , scanned =
                     if String.isEmpty model.field then
-                        model.entries
+                        model.scanned
                     else
-                        model.entries ++ [ newEntry << Maybe.withDefault 0 << String.toInt <| model.field ]
+                        model.scanned ++ [ Maybe.withDefault emptyBarcode << parseBarcode <| model.field ]
               }
             , Cmd.none
             )
@@ -181,7 +223,7 @@ update msg model =
             , Cmd.none
             )
         Delete prod ->
-            ( { model | entries = List.filter (\t -> t.product /= prod) model.entries }
+            ( { model | scanned = List.filter (\t -> t.product /= prod) model.scanned }
             , Cmd.none
             )
         ChangeVisibility visibility ->
@@ -193,10 +235,6 @@ update msg model =
 
 
 -- VIEW
-filesDecoder : D.Decoder (List File)
-filesDecoder =
-  D.at ["target","files"] (D.list File.decoder)
-
 
 view : Model -> Html Msg
 view model =
@@ -205,9 +243,14 @@ view model =
         ]
         [ section
             [ class "todoapp" ]
-            [ lazy (\_ -> viewUpload) 0
+            [ text model.visibility
+            , viewUpload
             , lazy viewInput model.field
-            , lazy2 viewEntries model.visibility model.entries
+            , h3 [] [ text "Scanned items" ]
+            , lazy viewScanned model.scanned
+            , h3 [] [ text "Ordered items" ]
+            , lazy viewEntries model.entries
+            , lazy3 viewControls model.visibility model.scanned model.entries
             ]
         , infoFooter
         ]
@@ -215,9 +258,10 @@ view model =
 viewUpload : Html Msg
 viewUpload =
     section
-        [ class "main"
+        [ class "new-todo"
         ]
-        [ input
+        [ h3 [] [ text "Import order CSV" ]
+        , input
             [ type_ "file"
             , multiple True
             , on "change" (D.map Import filesDecoder)
@@ -255,8 +299,8 @@ onEnter msg =
 
 
 -- VIEW ALL ENTRIES
-viewEntries : String -> List Row -> Html Msg
-viewEntries visibility entries =
+viewEntries : List Row -> Html Msg
+viewEntries entries =
         section
             [ class "main"
             ]
@@ -264,31 +308,104 @@ viewEntries visibility entries =
                 List.map viewKeyedEntry entries
             ]
 
+-- VIEW Scanned items
+viewScanned : List Barcode -> Html Msg
+viewScanned barcodes =
+         section
+            [ class "scanned"
+            ]
+            [ Keyed.ul [ class "todo-list" ] <|
+                List.map viewScannedEntry barcodes
+            ]
 
-
--- VIEW INDIVIDUAL ENTRIES
-viewKeyedEntry : Row -> ( String, Html Msg )
-viewKeyedEntry todo =
-    ( String.fromInt todo.product, lazy viewEntry todo )
-
-
-viewEntry : Row -> Html Msg
-viewEntry todo =
-    li
+-- VIEW SCANNED Entries
+viewScannedEntry : Barcode -> (String, Html Msg)
+viewScannedEntry barcode =
+    let
+        barstr = showBarcode barcode
+    in
+    (barstr,
+      li
         []
         [ div
             [ class "view" ]
             [ label
                 []
-                [ text todo.description ]
-            , button
+                [ text barstr ]
+             , button
                 [ class "destroy"
-                , onClick (Delete todo.product)
+                , onClick (Delete barcode.product)
                 ]
                 []
             ]
+        ])
+
+
+-- VIEW INDIVIDUAL ENTRIES
+viewKeyedEntry : Row -> (String, Html Msg)
+viewKeyedEntry row =
+    (String.fromInt row.product,
+      li
+        []
+        [ div
+            [ class "view" ]
+            [ label
+                []
+                [ text (String.fromInt row.product ++ " - " ++ row.description) ]
+            ]
+        ])
+
+viewControls : String -> List Barcode -> List Row -> Html Msg
+viewControls visibility barcodes entries =
+    let
+        codesn = List.length (barcodes)
+        entriesn = List.length (entries)
+    in
+        footer
+            [ class "footer"
+            ]
+            [ lazy2 viewControlsCount codesn entriesn
+            , lazy viewControlsFilters visibility
+            ]
+
+
+viewControlsCount : Int -> Int -> Html Msg
+viewControlsCount scannedNum entriesNum =
+    let
+        item_ =
+            if scannedNum == 1 then
+                " item"
+            else
+                " items"
+    in
+        span
+            [ class "todo-count" ]
+            [ strong [] [
+                text (String.fromInt scannedNum ++ "/" ++ String.fromInt entriesNum)
+            ]
+            , text (item_ ++ " scanned")
+            ]
+
+
+viewControlsFilters : String -> Html Msg
+viewControlsFilters visibility =
+    ul
+        [ class "filters" ]
+        [ visibilitySwap "#/" "All" visibility
+        , text " "
+        , visibilitySwap "#/in" "Incoming" visibility
+        , text " "
+        , visibilitySwap "#/out" "Outgoing" visibility
         ]
 
+
+visibilitySwap : String -> String -> String -> Html Msg
+visibilitySwap uri visibility actualVisibility =
+    li
+        [ onClick (ChangeVisibility visibility) ]
+        [ a [ href uri, classList [ ( "selected", visibility == actualVisibility ) ] ]
+            [ text visibility ]
+        ]
 
 infoFooter : Html msg
 infoFooter =
@@ -303,3 +420,5 @@ infoFooter =
             , a [ href "http://todomvc.com" ] [ text "TodoMVC" ]
             ]
         ]
+
+
