@@ -21,10 +21,12 @@ import File exposing (File)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
 import Html.Keyed as Keyed
+import List.Extra as LE
 import Csv exposing (..)
 import Html.Lazy exposing (..)
 import Json.Decode as D
 import Task
+import Debug as Dbg
 
 main : Program () Model Msg
 main =
@@ -51,70 +53,33 @@ updateWithStorage msg model =
         , Cmd.batch [ setStorage newModel.entries, cmds ]
         )
 
-
 -- Boilerplate
 type alias Error = String
 
 -- Primary key; product ID
-type alias ProductId = Int
+type alias UID = Int
 
+-- Count stats for each unit
+type alias Counter =
+    { used : Int
+    , recv : Int
+    , total: Int
+    }
+
+emptyCounter : Counter
+emptyCounter =
+    { used = 0
+    , recv = 0
+    , total = 0
+    }
+
+newCounter : Int -> Counter
+newCounter n = { emptyCounter | total = n }
+
+-- Scanned barcode type
 type alias Barcode =
-    { product: ProductId
+    { product: UID
     , num: Int
-    }
-
--- Data of each row
-type alias Row =
-    { distributor : Int
-    , date: Int
-    , product: ProductId
-    , description: String
-    , cs_price: Float
-    , ea_price: Float
-    , csn: Int
-    , ean: Int
-    , eprice: Float
-    , order: Int
-    , is_ordered: Bool
-    , is_received: Bool
-    , is_used: Bool
-    }
-
-type alias Model =
-    { scanned : List Barcode
-    , entries : List Row
-    , field : String
-    , files : List File
-    , visibility : String
-    , errormsg : Error
-    }
-
-emptyModel : Model
-emptyModel =
-    { scanned = []
-    , entries = []
-    , visibility = "All"
-    , field = ""
-    , files = []
-    , errormsg = ""
-    }
-
--- Row functionality
-emptyRow : Row
-emptyRow =
-    { distributor = 0
-    , date = 0
-    , product = 0
-    , description = ""
-    , cs_price = 0.0
-    , ea_price = 0.0
-    , csn = 0
-    , ean = 0
-    , eprice = 0.0
-    , order = 0
-    , is_ordered = False
-    , is_received = False
-    , is_used = False
     }
 
 -- Barcode functionality
@@ -138,20 +103,85 @@ fromBarcode : Barcode -> Row
 fromBarcode barcode =
     { distributor = 0
     , date = 0
+    , order = 0
     , product = barcode.product
     , description = String.fromInt barcode.product
-    , cs_price = 0.0
-    , ea_price = 0.0
-    , csn = 0
-    , ean = 0
-    , eprice = 0.0
-    , order = 0
-    , is_ordered = True
-    , is_received = True
-    , is_used = False
+    , counter = emptyCounter
+    , price = 0.0
+    }
+
+-- Data of each row
+type alias Row =
+    { distributor : UID
+    , date: Int
+    , order: UID
+    , product: UID
+    , description: String
+    , counter : Counter
+    , price: Float
     }
 
 -- Row functionality
+emptyRow : Row
+emptyRow =
+    { distributor = 0
+    , date = 0
+    , order = 0
+    , product = 0
+    , description = ""
+    , counter = emptyCounter
+    , price = 0.0
+    }
+
+-- Increase the counter in this row by 1
+incRow : Bool -> Row -> Row
+incRow isRecv r =
+    let
+        incfunc =
+            if isRecv then
+                (\c -> { c | recv = c.recv + 1 })
+            else
+                (\c -> { c | used = c.used + 1 })
+    in
+        { r | counter = incfunc r.counter }
+
+-- Decrease the counter in this row by 1
+decRow : Bool -> Row -> Row
+decRow isRecv r =
+    let
+        decfunc =
+            if isRecv then
+                (\c -> { c | recv =
+                    if (c.recv == 0 || c.recv == c.used)
+                        then c.recv
+                        else c.recv - 1 })
+
+            else
+                (\c -> { c | used =
+                    if (c.used == 0)
+                        then c.used
+                        else c.used - 1 })
+    in
+        { r | counter = decfunc r.counter }
+
+type alias Model =
+    { entries : List Row
+    , field : String
+    , files : List File
+    , visibility : String
+    , isRecv : Bool
+    }
+
+emptyModel : Model
+emptyModel =
+    { entries = []
+    , visibility = "Incoming"
+    , field = ""
+    , files = []
+    , isRecv = True
+    }
+
+-- Row CSV parsing functionality
 parseRow : List String -> Maybe Row
 parseRow attr =
     let
@@ -163,15 +193,11 @@ parseRow attr =
             Just { emptyRow
                     | distributor = unsafeInt distributor
                     , date = Time.posixToMillis (parseTime date)
+                    , order = unsafeInt ordern
                     , product = unsafeInt prod
                     , description = desc ++ ", " ++ brand ++ ", " ++ pack_size
-                    , cs_price = unsafeFloat cs_price
-                    , ea_price = unsafeFloat ea_price
-                    , csn = unsafeInt csn
-                    , ean = unsafeInt ean
-                    , eprice = unsafeFloat eprice
-                    , order = unsafeInt ordern
-                    , is_ordered = True
+                    , counter = newCounter (unsafeInt csn)
+                    , price = unsafeFloat eprice
                  }
         (l) -> Nothing
 
@@ -186,22 +212,17 @@ parseTime string =
     Iso8601.toTime string
         |> Result.withDefault (Time.millisToPosix 0)
 
--- Get description from product ID
-getDescription : List Row -> ProductId -> Result Error String
-getDescription entries prod =
-    case entries of
-        (row::tail) ->
-            if row.product == prod then
-                Ok row.description
-            else
-                getDescription tail prod
-        ([]) -> Err <| "Product ID " ++ String.fromInt prod ++ " not found in inventory"
+-- Scan a barcode received or used
+scan : Bool -> Barcode -> List Row -> List Row
+scan isRecv code =
+    LE.updateIf (\r -> r.product == code.product) (incRow isRecv)
 
+-- Unscan removed a scanned item count
+unscan : Bool -> UID -> List Row -> List Row
+unscan isRecv prod =
+    LE.updateIf (\r -> r.product == prod) (decRow isRecv)
 
--- Give the current batch a description for each item
---updateBatch : Model -> Batch ProductId -> Batch (ProductId, String)
---updateBatch model {action, items} =
---    case batch of
+-- Elm main app
 init : () -> ( Model, Cmd Msg )
 init _ =
   ( emptyModel
@@ -218,9 +239,9 @@ type Msg
     | LoadCsv (List File)
     | ImportCsv Csv
     | Scan
+    | Unscan UID
+    | ChangeMode
     | UpdateField String
-    | Delete Int
-    | ChangeVisibility String
     | Done
 
 -- Csv is a monoid
@@ -259,21 +280,25 @@ update msg model =
         ImportCsv csv ->
             case (maybeCombine << List.map parseRow <| csv.records) of
                 ([]) ->
-                    ({ model
-                        | errormsg = "No valid rows found in CSV file" ++ Debug.toString csv
-                     }, Cmd.none )
+                    (model, Cmd.none)
                 (rows) ->
                     ({ model
                         | entries = model.entries ++ rows
                      }, Cmd.none )
         Scan ->
+            let
+                barcode =
+                    Maybe.withDefault emptyBarcode << parseBarcode <| model.field
+            in
             ( { model
                 | field = ""
-                , scanned =
-                    if String.isEmpty model.field then
-                        model.scanned
-                    else
-                        model.scanned ++ [ Maybe.withDefault emptyBarcode << parseBarcode <| model.field ]
+                , entries = scan model.isRecv barcode model.entries
+              }
+            , Cmd.none
+            )
+        Unscan prod ->
+            ( { model
+                | entries = unscan model.isRecv prod model.entries
               }
             , Cmd.none
             )
@@ -281,12 +306,8 @@ update msg model =
             ( { model | field = str }
             , Cmd.none
             )
-        Delete prod ->
-            ( { model | scanned = List.filter (\t -> t.product /= prod) model.scanned }
-            , Cmd.none
-            )
-        ChangeVisibility visibility ->
-            ( { model | visibility = visibility }
+        ChangeMode ->
+            ( { model | isRecv = not model.isRecv }
             , Cmd.none
             )
         Done -> -- TODO: SQL integration
@@ -296,23 +317,17 @@ update msg model =
 -- VIEW
 view : Model -> Html Msg
 view model =
-    if model.errormsg /= "" then viewError model.errormsg
-    else
-        div
-            [ class "todomvc-wrapper"]
-            [ section
-                [ class "todoapp" ]
-                [ text model.visibility
-                , viewUpload
-                , lazy viewInput model.field
-                , h3 [] [ text "Scanned items" ]
-                , lazy viewScanned model.scanned
-                , h3 [] [ text "Ordered items" ]
-                , lazy viewEntries model.entries
-                , lazy3 viewControls model.visibility model.scanned model.entries
-                ]
-            , infoFooter
+    div
+        [ class "todomvc-wrapper"]
+        [ section
+            [ class "todoapp" ]
+            [ viewUpload
+            , lazy viewInput model.field
+            , lazy viewEntries model.entries
+            , lazy2 viewControls (List.length model.entries) model.isRecv
             ]
+        , infoFooter
+        ]
 
 viewError : Error -> Html Msg
 viewError e =
@@ -376,104 +391,72 @@ viewEntries entries =
                 List.map viewKeyedEntry entries
             ]
 
--- VIEW Scanned items
-viewScanned : List Barcode -> Html Msg
-viewScanned barcodes =
-         section
-            [ class "scanned"
-            ]
-            [ Keyed.ul [ class "todo-list" ] <|
-                List.map viewScannedEntry barcodes
-            ]
-
--- VIEW SCANNED Entries
-viewScannedEntry : Barcode -> (String, Html Msg)
-viewScannedEntry barcode =
-    let
-        barstr = showBarcode barcode
-    in
-    (barstr,
-      li
-        []
-        [ div
-            [ class "view" ]
-            [ label
-                []
-                [ text barstr ]
-             , button
-                [ class "destroy"
-                , onClick (Delete barcode.product)
-                ]
-                []
-            ]
-        ])
-
-
 -- VIEW INDIVIDUAL ENTRIES
 viewKeyedEntry : Row -> (String, Html Msg)
 viewKeyedEntry row =
-    (String.fromInt row.product,
-      li
-        []
-        [ div
-            [ class "view" ]
-            [ label
-                []
-                [ text (String.fromInt row.product ++ " - " ++ row.description ++ " #" ++ String.fromInt row.csn) ]
-            ]
-        ])
+    (String.fromInt row.product
+    , tr []
+         [ td [] [ text (String.fromInt 1)]
+         , td [] [ text row.description ]
+         , td [] [ text (String.fromInt row.counter.used) ]
+         , td [] [ text (String.fromInt row.counter.recv) ]
+         , td [] [ text (String.fromInt row.counter.total) ]
+         , td [] [ button [ onClick (Unscan row.product) ] [ text "-" ] ]
+         ]
+    )
 
-viewControls : String -> List Barcode -> List Row -> Html Msg
-viewControls visibility barcodes entries =
+viewControls : Int -> Bool -> Html Msg
+viewControls nitems isRecv =
     let
-        codesn = List.length (barcodes)
-        entriesn = List.length (entries)
+        viewNum n =
+            if n == 1 then
+                text (String.fromInt n ++ " item scanned")
+            else
+                text (String.fromInt n ++ " items scanned")
     in
         footer
             [ class "footer"
             ]
-            [ lazy2 viewControlsCount codesn entriesn
-            , lazy viewControlsFilters visibility
+            [ span
+                [ class "todo-count" ]
+                [ strong [] [
+                    lazy viewNum nitems
+                    ]
+                ]
+            , lazy viewControlsRecv isRecv
             ]
 
-
-viewControlsCount : Int -> Int -> Html Msg
-viewControlsCount scannedNum entriesNum =
-    let
-        item_ =
-            if scannedNum == 1 then
-                " item"
-            else
-                " items"
-    in
-        span
-            [ class "todo-count" ]
-            [ strong [] [
-                text (String.fromInt scannedNum ++ "/" ++ String.fromInt entriesNum)
-            ]
-            , text (item_ ++ " scanned")
-            ]
-
-
-viewControlsFilters : String -> Html Msg
-viewControlsFilters visibility =
+viewControlsRecv : Bool -> Html Msg
+viewControlsRecv isRecv =
     ul
         [ class "filters" ]
-        [ visibilitySwap "#/" "All" visibility
+        [ modeToggle True isRecv
         , text " "
-        , visibilitySwap "#/in" "Incoming" visibility
+        , modeToggle False isRecv
         , text " "
-        , visibilitySwap "#/out" "Outgoing" visibility
+        , viewDone
         ]
 
-
-visibilitySwap : String -> String -> String -> Html Msg
-visibilitySwap uri visibility actualVisibility =
+viewDone : Html Msg
+viewDone =
     li
-        [ onClick (ChangeVisibility visibility) ]
-        [ a [ href uri, classList [ ( "selected", visibility == actualVisibility ) ] ]
-            [ text visibility ]
+        []
+        [ button
+            [ onClick Done ]
+            [ text "Done" ]
         ]
+
+modeToggle : Bool -> Bool -> Html Msg
+modeToggle isRecv actualb =
+    let
+        uri = if isRecv then "#/received" else "#/outgoing"
+        str = if isRecv then "Incoming" else "Used"
+    in
+        li
+            [ onClick ChangeMode ]
+            [ a [ href uri, classList [ ( "selected", isRecv == actualb ) ] ]
+                [ text str ]
+            ]
 
 infoFooter : Html msg
 infoFooter =
