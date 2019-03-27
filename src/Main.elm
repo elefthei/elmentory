@@ -125,7 +125,7 @@ parseBarcode : String -> Maybe Barcode
 parseBarcode prod =
     let
         num = Maybe.withDefault 0 << String.toInt << String.right 2 <| prod
-        getProduct = String.toInt << String.slice 5 12
+        getProduct = String.toInt << String.slice 6 13
     in
         Just prod
             |> Maybe.andThen getProduct
@@ -419,7 +419,7 @@ viewKeyedEntry row =
             [ class "view" ]
             [ label
                 []
-                [ text (String.fromInt row.product ++ " - " ++ row.description) ]
+                [ text (String.fromInt row.product ++ " - " ++ row.description ++ " #" ++ String.fromInt row.csn) ]
             ]
         ])
 
@@ -478,14 +478,9 @@ visibilitySwap uri visibility actualVisibility =
 infoFooter : Html msg
 infoFooter =
     footer [ class "info" ]
-        [ p [] [ text "Double-click to edit a todo" ]
-        , p []
+        [ p []
             [ text "Written by "
-            , a [ href "https://github.com/evancz" ] [ text "Evan Czaplicki" ]
-            ]
-        , p []
-            [ text "Part of "
-            , a [ href "http://todomvc.com" ] [ text "TodoMVC" ]
+            , a [ href "https://github.com/elefthei" ] [ text "Lef Ioannidis" ]
             ]
         ]
 
