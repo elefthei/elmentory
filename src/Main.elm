@@ -21,6 +21,7 @@ import File exposing (File)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
 import Html.Keyed as Keyed
+import Csv exposing (..)
 import Html.Lazy exposing (..)
 import Json.Decode as D
 import Task
@@ -70,8 +71,8 @@ type alias Row =
     , description: String
     , cs_price: Float
     , ea_price: Float
-    , ncs: Int
-    , nea: Int
+    , csn: Int
+    , ean: Int
     , eprice: Float
     , order: Int
     , is_ordered: Bool
@@ -79,14 +80,13 @@ type alias Row =
     , is_used: Bool
     }
 
-type Status = Incoming | Outgoing
-
 type alias Model =
     { scanned : List Barcode
     , entries : List Row
     , field : String
     , files : List File
-    , visibility: String
+    , visibility : String
+    , errormsg : Error
     }
 
 emptyModel : Model
@@ -96,6 +96,7 @@ emptyModel =
     , visibility = "All"
     , field = ""
     , files = []
+    , errormsg = ""
     }
 
 -- Row functionality
@@ -107,8 +108,8 @@ emptyRow =
     , description = ""
     , cs_price = 0.0
     , ea_price = 0.0
-    , ncs = 0
-    , nea = 0
+    , csn = 0
+    , ean = 0
     , eprice = 0.0
     , order = 0
     , is_ordered = False
@@ -141,8 +142,8 @@ fromBarcode barcode =
     , description = String.fromInt barcode.product
     , cs_price = 0.0
     , ea_price = 0.0
-    , ncs = 0
-    , nea = 0
+    , csn = 0
+    , ean = 0
     , eprice = 0.0
     , order = 0
     , is_ordered = True
@@ -150,11 +151,34 @@ fromBarcode barcode =
     , is_used = False
     }
 
+-- Row functionality
+parseRow : List String -> Maybe Row
+parseRow attr =
+    let
+        unsafeInt = Maybe.withDefault 0 << String.toInt
+        unsafeFloat = Maybe.withDefault 0.0 << String.toFloat
+    in
+    case attr of
+        (customer::distributor::dept::date::po_num::prod::customer_prod::desc::brand::pack_size::cs_price::ea_price::csn::ean::eprice::ordern::[]) ->
+            Just { emptyRow
+                    | distributor = unsafeInt distributor
+                    , date = Time.posixToMillis (parseTime date)
+                    , product = unsafeInt prod
+                    , description = desc ++ ", " ++ brand ++ ", " ++ pack_size
+                    , cs_price = unsafeFloat cs_price
+                    , ea_price = unsafeFloat ea_price
+                    , csn = unsafeInt csn
+                    , ean = unsafeInt ean
+                    , eprice = unsafeFloat eprice
+                    , order = unsafeInt ordern
+                    , is_ordered = True
+                 }
+        (l) -> Nothing
+
 -- JSON decoder
 filesDecoder : D.Decoder (List File)
 filesDecoder =
   D.at ["target","files"] (D.list File.decoder)
-
 
 -- ISO Time
 parseTime : String -> Time.Posix
@@ -191,13 +215,32 @@ to them.
 -}
 type Msg
     = NoOp
-    | Import (List File)
+    | LoadCsv (List File)
+    | ImportCsv Csv
     | Scan
     | UpdateField String
     | Delete Int
     | ChangeVisibility String
     | Done
 
+-- Csv is a monoid
+concatCsv : Csv -> Csv -> Csv
+concatCsv left right = { left | records = left.records ++ right.records }
+
+-- Concat monoid
+flattenCsvs : List Csv -> Csv
+flattenCsvs csvs =
+    case csvs of
+        (h::ts) -> concatCsv h << flattenCsvs <| ts
+        ([]) ->  { headers = [], records = [] }
+
+-- From list of maybe to List, drops Nothing
+maybeCombine : List (Maybe a) -> List a
+maybeCombine l =
+    case l of
+        ((Just a)::ts) -> a :: maybeCombine ts
+        (Nothing::ts) -> maybeCombine ts
+        ([]) -> []
 
 -- How we update our Model on a given Msg?
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -205,8 +248,24 @@ update msg model =
     case msg of
         NoOp ->
             (model, Cmd.none)
-        Import files ->
-            ({model | files = files} , Cmd.none)
+        LoadCsv files ->
+            ( model
+            , Task.perform ImportCsv (
+                    Task.map (flattenCsvs << List.map Csv.parse)
+                    << Task.sequence
+                    << List.map File.toString
+                    <| files)
+            )
+        ImportCsv csv ->
+            case (maybeCombine << List.map parseRow <| csv.records) of
+                ([]) ->
+                    ({ model
+                        | errormsg = "No valid rows found in CSV file" ++ Debug.toString csv
+                     }, Cmd.none )
+                (rows) ->
+                    ({ model
+                        | entries = model.entries ++ rows
+                     }, Cmd.none )
         Scan ->
             ( { model
                 | field = ""
@@ -235,24 +294,33 @@ update msg model =
 
 
 -- VIEW
-
 view : Model -> Html Msg
 view model =
-    div
-        [ class "todomvc-wrapper"
-        ]
-        [ section
-            [ class "todoapp" ]
-            [ text model.visibility
-            , viewUpload
-            , lazy viewInput model.field
-            , h3 [] [ text "Scanned items" ]
-            , lazy viewScanned model.scanned
-            , h3 [] [ text "Ordered items" ]
-            , lazy viewEntries model.entries
-            , lazy3 viewControls model.visibility model.scanned model.entries
+    if model.errormsg /= "" then viewError model.errormsg
+    else
+        div
+            [ class "todomvc-wrapper"]
+            [ section
+                [ class "todoapp" ]
+                [ text model.visibility
+                , viewUpload
+                , lazy viewInput model.field
+                , h3 [] [ text "Scanned items" ]
+                , lazy viewScanned model.scanned
+                , h3 [] [ text "Ordered items" ]
+                , lazy viewEntries model.entries
+                , lazy3 viewControls model.visibility model.scanned model.entries
+                ]
+            , infoFooter
             ]
-        , infoFooter
+
+viewError : Error -> Html Msg
+viewError e =
+    div
+        [ class "error"]
+        [ section
+            []
+            [ text ("An error has occured: " ++ e) ]
         ]
 
 viewUpload : Html Msg
@@ -264,7 +332,7 @@ viewUpload =
         , input
             [ type_ "file"
             , multiple True
-            , on "change" (D.map Import filesDecoder)
+            , on "change" (D.map LoadCsv filesDecoder)
             ]
             []
         ]
