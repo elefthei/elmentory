@@ -14,6 +14,8 @@ this in <http://guide.elm-lang.org/architecture/index.html>
 
 import Iso8601
 import Time
+import Set as Set exposing (Set)
+import Dict as Dict exposing (Dict)
 import Browser
 import Browser.Dom as Dom
 import Html exposing (..)
@@ -25,6 +27,7 @@ import List.Extra as LE
 import Csv exposing (..)
 import Html.Lazy exposing (..)
 import Json.Decode as D
+import Json.Encode as E
 import Task
 import Debug as Dbg
 
@@ -33,48 +36,15 @@ main =
     Browser.document
         { init = init
         , view = \model -> { title = "Elmentory • Inventory Control", body = [view model] }
-        , update = updateWithStorage
+        , update = update
         , subscriptions = \_ -> Sub.none
         }
-
-port setStorage : List Row -> Cmd msg
-
-
-{-| We want to `setStorage` on every update. This function adds the setStorage
-command for every step of the update function.
--}
-updateWithStorage : Msg -> Model -> ( Model, Cmd Msg )
-updateWithStorage msg model =
-    let
-        ( newModel, cmds ) =
-            update msg model
-    in
-        ( newModel
-        , Cmd.batch [ setStorage newModel.entries, cmds ]
-        )
 
 -- Boilerplate
 type alias Error = String
 
 -- Primary key; product ID
 type alias UID = Int
-
--- Count stats for each unit
-type alias Counter =
-    { used : Int
-    , recv : Int
-    , total: Int
-    }
-
-emptyCounter : Counter
-emptyCounter =
-    { used = 0
-    , recv = 0
-    , total = 0
-    }
-
-newCounter : Int -> Counter
-newCounter n = { emptyCounter | total = n }
 
 -- Scanned barcode type
 type alias Barcode =
@@ -99,25 +69,15 @@ parseBarcode prod =
 showBarcode : Barcode -> String
 showBarcode bar = String.fromInt bar.product ++ " #" ++ String.fromInt bar.num
 
-fromBarcode : Barcode -> Row
-fromBarcode barcode =
-    { distributor = 0
-    , date = 0
-    , order = 0
-    , product = barcode.product
-    , description = String.fromInt barcode.product
-    , counter = emptyCounter
-    , price = 0.0
-    }
-
 -- Data of each row
 type alias Row =
     { distributor : UID
     , date: Int
     , order: UID
-    , product: UID
     , description: String
-    , counter : Counter
+    , received : Set Int
+    , used : Set Int
+    , total : Int
     , price: Float
     }
 
@@ -127,62 +87,83 @@ emptyRow =
     { distributor = 0
     , date = 0
     , order = 0
-    , product = 0
+    , total = 0
+    , used = Set.empty
+    , received = Set.empty
     , description = ""
-    , counter = emptyCounter
     , price = 0.0
     }
 
--- Increase the counter in this row by 1
-incRow : Bool -> Row -> Row
-incRow isRecv r =
-    let
-        incfunc =
-            if isRecv then
-                (\c -> { c | recv = c.recv + 1 })
-            else
-                (\c -> { c | used = c.used + 1 })
-    in
-        { r | counter = incfunc r.counter }
+encodeRow : Row -> E.Value
+encodeRow r = E.object
+    [ ("distributor", E.int r.distributor)
+    , ("date", E.int r.date)
+    , ("order", E.int r.order)
+    , ("total", E.int r.total)
+    , ("used", E.list E.int
+                <| Set.toList
+                <| r.used)
+    , ("received", E.list E.int
+                    <| Set.toList
+                    <| r.received)
+    , ("description", E.string r.description)
+    , ("price", E.float r.price)
+    ]
 
--- Decrease the counter in this row by 1
-decRow : Bool -> Row -> Row
-decRow isRecv r =
-    let
-        decfunc =
-            if isRecv then
-                (\c -> { c | recv =
-                    if (c.recv == 0 || c.recv == c.used)
-                        then c.recv
-                        else c.recv - 1 })
+encode : Catalog -> E.Value
+encode = E.object << Dict.foldr (\k v l -> (String.fromInt k, encodeRow v)::l) []
 
-            else
-                (\c -> { c | used =
-                    if (c.used == 0)
-                        then c.used
-                        else c.used - 1 })
-    in
-        { r | counter = decfunc r.counter }
+serialize : Catalog -> String
+serialize = E.encode 2 << encode
 
+-- Top Data store
+type alias Catalog = Dict UID Row
+
+-- Top level model for UI
 type alias Model =
-    { entries : List Row
+    { entries : Catalog
     , field : String
     , files : List File
-    , visibility : String
     , isRecv : Bool
     }
 
 emptyModel : Model
 emptyModel =
-    { entries = []
-    , visibility = "Incoming"
+    { entries = Dict.empty
     , field = ""
     , files = []
     , isRecv = True
     }
 
+-- Add a box in the catalog of boxes
+addBox : Bool -> Barcode -> Catalog -> Catalog
+addBox isRecv code = Dict.update code.product (\m ->
+    case (isRecv, m) of
+        (True,  Just row) -> Just { row | received = Set.insert code.num row.received }
+        (False, Just row) -> Just { row | used = Set.insert code.num row.used }
+        (_, Nothing) -> Nothing
+    )
+
+-- How many boxes where scanned for a UID
+numRecv : UID -> Catalog -> Int
+numRecv prod c =
+    case (Dict.get prod c) of
+        (Just row) -> Set.size row.received
+        (Nothing) -> 0
+
+-- How many boxes where scanned for a UID
+numUsed : UID -> Catalog -> Int
+numUsed prod c =
+    case (Dict.get prod c) of
+        (Just row) -> Set.size row.used
+        (Nothing) -> 0
+
+-- Where all the boxes used for that order
+isClosed : Row -> Bool
+isClosed r = Set.size r.received == Set.size r.used && Set.size r.received == r.total
+
 -- Row CSV parsing functionality
-parseRow : List String -> Maybe Row
+parseRow : List String -> Maybe (UID, Row)
 parseRow attr =
     let
         unsafeInt = Maybe.withDefault 0 << String.toInt
@@ -190,15 +171,17 @@ parseRow attr =
     in
     case attr of
         (customer::distributor::dept::date::po_num::prod::customer_prod::desc::brand::pack_size::cs_price::ea_price::csn::ean::eprice::ordern::[]) ->
-            Just { emptyRow
+            Just ( unsafeInt prod
+                 , { emptyRow
                     | distributor = unsafeInt distributor
                     , date = Time.posixToMillis (parseTime date)
                     , order = unsafeInt ordern
-                    , product = unsafeInt prod
                     , description = desc ++ ", " ++ brand ++ ", " ++ pack_size
-                    , counter = newCounter (unsafeInt csn)
+                    , total = unsafeInt csn
+                    , received = Set.empty
+                    , used = Set.empty
                     , price = unsafeFloat eprice
-                 }
+                 })
         (l) -> Nothing
 
 -- JSON decoder
@@ -213,14 +196,14 @@ parseTime string =
         |> Result.withDefault (Time.millisToPosix 0)
 
 -- Scan a barcode received or used
-scan : Bool -> Barcode -> List Row -> List Row
+scan : Bool -> Barcode -> Catalog -> Catalog
 scan isRecv code =
-    LE.updateIf (\r -> r.product == code.product) (incRow isRecv)
-
--- Unscan removed a scanned item count
-unscan : Bool -> UID -> List Row -> List Row
-unscan isRecv prod =
-    LE.updateIf (\r -> r.product == prod) (decRow isRecv)
+    Dict.update code.product (\m ->
+        case (isRecv, m) of
+            (True,  Just row) -> Just { row | received = Set.insert code.num row.received }
+            (False, Just row) -> Just { row | used = Set.insert code.num row.used }
+            (_, Nothing) -> Nothing
+    )
 
 -- Elm main app
 init : () -> ( Model, Cmd Msg )
@@ -239,7 +222,6 @@ type Msg
     | LoadCsv (List File)
     | ImportCsv Csv
     | Scan
-    | Unscan UID
     | ChangeMode
     | UpdateField String
     | Done
@@ -283,7 +265,7 @@ update msg model =
                     (model, Cmd.none)
                 (rows) ->
                     ({ model
-                        | entries = model.entries ++ rows
+                        | entries = Dict.union (Dict.fromList rows) model.entries
                      }, Cmd.none )
         Scan ->
             let
@@ -293,12 +275,6 @@ update msg model =
             ( { model
                 | field = ""
                 , entries = scan model.isRecv barcode model.entries
-              }
-            , Cmd.none
-            )
-        Unscan prod ->
-            ( { model
-                | entries = unscan model.isRecv prod model.entries
               }
             , Cmd.none
             )
@@ -315,6 +291,10 @@ update msg model =
 
 
 -- VIEW
+nbsp : String
+nbsp = String.fromChar '\u{00A0}'
+
+
 view : Model -> Html Msg
 view model =
     div
@@ -323,8 +303,8 @@ view model =
             [ class "todoapp" ]
             [ viewUpload
             , lazy viewInput model.field
+            , lazy2 viewControls (List.length << Dict.values <| model.entries) model.isRecv
             , lazy viewEntries model.entries
-            , lazy2 viewControls (List.length model.entries) model.isRecv
             ]
         , infoFooter
         ]
@@ -382,26 +362,29 @@ onEnter msg =
 
 
 -- VIEW ALL ENTRIES
-viewEntries : List Row -> Html Msg
+viewEntries : Catalog -> Html Msg
 viewEntries entries =
         section
             [ class "main"
             ]
-            [ Keyed.ul [ class "todo-list" ] <|
-                List.map viewKeyedEntry entries
+            [ Keyed.ul [ class "todo-list" ]
+                    << Dict.values
+                    << Dict.map viewKeyedEntry
+                    <| entries
             ]
 
 -- VIEW INDIVIDUAL ENTRIES
-viewKeyedEntry : Row -> (String, Html Msg)
-viewKeyedEntry row =
-    (String.fromInt row.product
-    , tr []
-         [ td [] [ text (String.fromInt 1)]
+viewKeyedEntry : UID -> Row -> (String, Html Msg)
+viewKeyedEntry product row =
+    (String.fromInt product
+    , tr [ class (if isClosed row then "row-closed" else "row-open") ]
+         [ td [] [ text (String.fromInt row.total) ]
          , td [] [ text row.description ]
-         , td [] [ text (String.fromInt row.counter.used) ]
-         , td [] [ text (String.fromInt row.counter.recv) ]
-         , td [] [ text (String.fromInt row.counter.total) ]
-         , td [] [ button [ onClick (Unscan row.product) ] [ text "-" ] ]
+         , td [] [ text nbsp ]
+         , td [] [ text << String.fromInt << Set.size <| row.used ]
+         , td [] [ text nbsp ]
+         , td [] [ text << String.fromInt << Set.size <| row.received ]
+         , td [] [ text nbsp ]
          ]
     )
 
