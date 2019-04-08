@@ -40,6 +40,9 @@ main =
         , subscriptions = \_ -> Sub.none
         }
 
+-- Write an encoded Row to DB
+port db : E.Value -> Cmd msg
+
 -- Boilerplate
 type alias Error = String
 
@@ -100,10 +103,14 @@ encodeRow r = E.object
     , ("date", E.int r.date)
     , ("order", E.int r.order)
     , ("total", E.int r.total)
-    , ("used", E.list E.int
+    , ("used",  E.string
+                <| E.encode 0
+                <| E.list E.int
                 <| Set.toList
                 <| r.used)
-    , ("received", E.list E.int
+    , ("received",  E.string
+                    <| E.encode 0
+                    <| E.list E.int
                     <| Set.toList
                     <| r.received)
     , ("description", E.string r.description)
