@@ -43,6 +43,9 @@ main =
 -- Write an encoded Row to DB
 port db : E.Value -> Cmd msg
 
+-- Print the page
+port print : () -> Cmd msg
+
 -- Boilerplate
 type alias Error = String
 
@@ -229,9 +232,10 @@ type Msg
     | LoadCsv (List File)
     | ImportCsv Csv
     | Scan
-    | ChangeMode
+    | ChangeMode String
     | UpdateField String
     | Done
+    | Print
 
 -- Csv is a monoid
 concatCsv : Csv -> Csv -> Csv
@@ -285,16 +289,23 @@ update msg model =
               }
             , Cmd.none
             )
+        Print -> (model, print ())
         UpdateField str ->
             ( { model | field = str }
             , Cmd.none
             )
-        ChangeMode ->
-            ( { model | isRecv = not model.isRecv }
+        ChangeMode mode ->
+            ( { model | isRecv = case mode of
+                    ("recv") -> True
+                    (_) -> False
+              }
             , Cmd.none
             )
-        Done -> -- TODO: SQL integration
-            (model, Cmd.none)
+        Done ->
+            (model, model.entries
+                    |> encode
+                    |> db
+            )
 
 
 -- VIEW
@@ -425,16 +436,24 @@ viewControlsRecv isRecv =
         , modeToggle False isRecv
         , text " "
         , viewDone
+        , text " "
+        , viewPrint
         ]
 
 viewDone : Html Msg
 viewDone =
     li
-        []
+        [ onClick Done ]
         [ button
             [ onClick Done ]
             [ text "Done" ]
         ]
+
+viewPrint : Html Msg
+viewPrint =
+        button
+            [ onClick Print ]
+            [ text "Print" ]
 
 modeToggle : Bool -> Bool -> Html Msg
 modeToggle isRecv actualb =
@@ -443,7 +462,7 @@ modeToggle isRecv actualb =
         str = if isRecv then "Incoming" else "Used"
     in
         li
-            [ onClick ChangeMode ]
+            [ onClick (ChangeMode str) ]
             [ a [ href uri, classList [ ( "selected", isRecv == actualb ) ] ]
                 [ text str ]
             ]

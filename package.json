@@ -2,6 +2,7 @@
   "name": "Elmentory",
   "description": "Simple inventory system",
   "version": "0.1.0",
+  "chromium-args": "--enable-logging=stderr",
   "main": "index.html",
   "window": {
     "toolbar": false,
@@ -12,6 +13,7 @@
     "start": "nw ."
   },
   "dependencies": {
+    "nw": "^0.37.3",
     "sequelize": "^5.2.8",
     "tedious": "^6.1.0"
   }
