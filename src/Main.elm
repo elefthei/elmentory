@@ -27,7 +27,9 @@ import List.Extra as LE
 import Csv exposing (..)
 import Html.Lazy exposing (..)
 import Json.Decode as D
+import Json.Decode.Pipeline as DP
 import Json.Encode as E
+import Tuple
 import Task
 import Debug as Dbg
 
@@ -37,11 +39,18 @@ main =
         { init = init
         , view = \model -> { title = "Elmentory • Inventory Control", body = [view model] }
         , update = update
-        , subscriptions = \_ -> Sub.none
+        , subscriptions = subscriptions
         }
 
 -- Write an encoded Row to DB
 port db : E.Value -> Cmd msg
+port importdb : UID -> Cmd msg
+port load : (E.Value -> msg) -> Sub msg
+
+-- Subscribe to DB load
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    load (ImportDB << decode)
 
 -- Print the page
 port print : () -> Cmd msg
@@ -62,6 +71,7 @@ type alias Barcode =
 emptyBarcode : Barcode
 emptyBarcode = { product = 0, num = 0 }
 
+-- Parse a barcode string into a barcode object
 parseBarcode : String -> Maybe Barcode
 parseBarcode prod =
     let
@@ -72,13 +82,14 @@ parseBarcode prod =
             |> Maybe.andThen getProduct
             |> Maybe.andThen (\id -> Just { product = id, num = num })
 
+-- Now show it in a readable format
 showBarcode : Barcode -> String
 showBarcode bar = String.fromInt bar.product ++ " #" ++ String.fromInt bar.num
 
 -- Data of each row
 type alias Row =
     { distributor : UID
-    , date: Int
+    , date: String
     , order: UID
     , description: String
     , received : Set Int
@@ -91,7 +102,7 @@ type alias Row =
 emptyRow : Row
 emptyRow =
     { distributor = 0
-    , date = 0
+    , date = ""
     , order = 0
     , total = 0
     , used = Set.empty
@@ -103,7 +114,8 @@ emptyRow =
 encodeRow : Row -> E.Value
 encodeRow r = E.object
     [ ("distributor", E.int r.distributor)
-    , ("date", E.int r.date)
+    , ("date", E.string
+               <| r.date)
     , ("order", E.int r.order)
     , ("total", E.int r.total)
     , ("used",  E.string
@@ -123,8 +135,62 @@ encodeRow r = E.object
 encode : Catalog -> E.Value
 encode = E.object << Dict.foldr (\k v l -> (String.fromInt k, encodeRow v)::l) []
 
-serialize : Catalog -> String
-serialize = E.encode 2 << encode
+-- No sets on SQL, use JSON strings instead
+decodeSet : String -> Set Int
+decodeSet s =
+    case D.decodeString (D.list D.int) s of
+        (Ok l) -> Set.fromList l
+        (Err k) -> Dbg.log (D.errorToString k) Set.empty
+
+type alias IntermediateRow =
+    { product: Int
+    , distributor: Int
+    , date: String
+    , order: Int
+    , total: Int
+    , used: String -- Not yet parsed the inner list
+    , received: String -- Not yet parsed the inner list
+    , description: String
+    , price: Float
+    }
+
+-- Use an intermediate representation between parsing steps
+decoderIntermediate : D.Decoder IntermediateRow
+decoderIntermediate =
+    D.succeed IntermediateRow
+    |> DP.required "product" D.int
+    |> DP.required "distributor" D.int
+    |> DP.required "date" D.string
+    |> DP.required "order" D.int
+    |> DP.required "total" D.int
+    |> DP.required "used" D.string
+    |> DP.required "received" D.string
+    |> DP.required "description" D.string
+    |> DP.required "price" D.float
+
+-- Now parse the inner representation to the outer one
+parseInner : IntermediateRow -> (UID, Row)
+parseInner { product, distributor, date, order, total, used, received, description, price } =
+    (product
+    , { emptyRow | distributor = distributor
+                 , date = date
+                 , order = order
+                 , total = total
+                 , used = decodeSet used
+                 , received = decodeSet received
+                 , description = description
+                 , price = price
+      }
+    )
+
+-- Decode JSON value to an Elm dictionary
+decode : E.Value -> Catalog
+decode v =
+    case (Dbg.log (E.encode 2 v) (D.decodeValue (D.list decoderIntermediate) v)) of
+        (Ok inter) -> inter
+                        |> List.map parseInner
+                        |> Dict.fromList
+        (Err e) -> Dbg.log (D.errorToString e) Dict.empty
 
 -- Top Data store
 type alias Catalog = Dict UID Row
@@ -184,7 +250,7 @@ parseRow attr =
             Just ( unsafeInt prod
                  , { emptyRow
                     | distributor = unsafeInt distributor
-                    , date = Time.posixToMillis (parseTime date)
+                    , date = date
                     , order = unsafeInt ordern
                     , description = desc ++ ", " ++ brand ++ ", " ++ pack_size
                     , total = unsafeInt csn
@@ -198,12 +264,6 @@ parseRow attr =
 filesDecoder : D.Decoder (List File)
 filesDecoder =
   D.at ["target","files"] (D.list File.decoder)
-
--- ISO Time
-parseTime : String -> Time.Posix
-parseTime string =
-    Iso8601.toTime string
-        |> Result.withDefault (Time.millisToPosix 0)
 
 -- Scan a barcode received or used
 scan : Bool -> Barcode -> Catalog -> Catalog
@@ -231,6 +291,7 @@ type Msg
     = NoOp
     | LoadCsv (List File)
     | ImportCsv Csv
+    | ImportDB Catalog
     | Scan
     | ChangeMode String
     | UpdateField String
@@ -274,10 +335,14 @@ update msg model =
             case (maybeCombine << List.map parseRow <| csv.records) of
                 ([]) ->
                     (model, Cmd.none)
-                (rows) ->
+                ((prod,r)::trows) ->
                     ({ model
-                        | entries = Dict.union (Dict.fromList rows) model.entries
-                     }, Cmd.none )
+                        | entries = Dict.union (Dict.fromList ((prod,r)::trows)) model.entries
+                     }
+                     , importdb r.order -- Load DB entries for that order
+                    )
+        ImportDB catalog -> ({ model | entries = Dict.union model.entries catalog }
+                            , Cmd.none)
         Scan ->
             let
                 barcode =
@@ -307,18 +372,12 @@ update msg model =
                     |> db
             )
 
-
--- VIEW
-nbsp : String
-nbsp = String.fromChar '\u{00A0}'
-
-
 view : Model -> Html Msg
 view model =
     div
-        [ class "todomvc-wrapper"]
+        [ class "prodapp-wrapper"]
         [ section
-            [ class "todoapp" ]
+            [ class "prodapp" ]
             [ viewUpload
             , lazy viewInput model.field
             , lazy2 viewControls (List.length << Dict.values <| model.entries) model.isRecv
@@ -339,15 +398,16 @@ viewError e =
 viewUpload : Html Msg
 viewUpload =
     section
-        [ class "new-todo"
+        [ class "prodapp-main"
         ]
-        [ h3 [] [ text "Import order CSV" ]
+        [ h2 [] [ text "Import order CSV file"
         , input
             [ type_ "file"
             , multiple True
             , on "change" (D.map LoadCsv filesDecoder)
             ]
             []
+          ]
         ]
 
 viewInput : String -> Html Msg
@@ -356,7 +416,7 @@ viewInput task =
         [ class "header" ]
         [ h1 [] [ text "Products" ]
         , input
-            [ class "new-todo"
+            [ class "prodapp-main"
             , placeholder "Scan some items"
             , autofocus True
             , value task
@@ -385,26 +445,32 @@ viewEntries entries =
         section
             [ class "main"
             ]
-            [ Keyed.ul [ class "todo-list" ]
-                    << Dict.values
-                    << Dict.map viewKeyedEntry
-                    <| entries
+            [ table [ class "prod-table" ]
+                (List.concat [
+                  [ thead []
+                    [ th [] [text "#"]
+                    , th [] [text "ProductID"]
+                    , th [] [text "Description"]
+                    , th [] [text "Received"]
+                    , th [] [text "Used"]
+                    ]
+                  ]
+                  , entries
+                    |> Dict.map viewKeyedEntry
+                    |> Dict.values
+                ])
             ]
 
 -- VIEW INDIVIDUAL ENTRIES
-viewKeyedEntry : UID -> Row -> (String, Html Msg)
+viewKeyedEntry : UID -> Row -> Html Msg
 viewKeyedEntry product row =
-    (String.fromInt product
-    , tr [ class (if isClosed row then "row-closed" else "row-open") ]
-         [ td [] [ text (String.fromInt row.total) ]
-         , td [] [ text row.description ]
-         , td [] [ text nbsp ]
-         , td [] [ text << String.fromInt << Set.size <| row.used ]
-         , td [] [ text nbsp ]
-         , td [] [ text << String.fromInt << Set.size <| row.received ]
-         , td [] [ text nbsp ]
-         ]
-    )
+    tr [ class (if isClosed row then "row-closed" else "row-open") ]
+       [ td [] [ text (String.fromInt row.total) ]
+       , td [] [ text (String.fromInt product) ]
+       , td [] [ text row.description ]
+       , td [] [ text << String.fromInt << Set.size <| row.used ]
+       , td [] [ text << String.fromInt << Set.size <| row.received ]
+       ]
 
 viewControls : Int -> Bool -> Html Msg
 viewControls nitems isRecv =

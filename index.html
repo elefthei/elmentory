@@ -15,6 +15,7 @@
 <script type="text/javascript">
 var app = Elm.Main.init({ flags: null });
 
+// Subscribe to print command, talk to printer
 app.ports.print.subscribe(function(){
   console.log("Print!");
   // Get the current window
@@ -22,9 +23,16 @@ app.ports.print.subscribe(function(){
   win.print({ autoprint : false });
 });
 
+// Commit data to DB
 app.ports.db.subscribe(function(data) {
   console.log("DB!");
   commit(data);
+});
+
+// Load data from DB
+app.ports.importdb.subscribe(function(order) {
+  console.log("Load!");
+  load(order, app.ports.load.send);
 });
 
 </script>
