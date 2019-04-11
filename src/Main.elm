@@ -93,7 +93,10 @@ type alias Row =
     , order: UID
     , description: String
     , received : Set Int
-    , used : Set Int
+    , high : Set Int
+    , inter: Set Int
+    , lower : Set Int
+    , academia : Set Int
     , total : Int
     , price: Float
     }
@@ -105,29 +108,32 @@ emptyRow =
     , date = ""
     , order = 0
     , total = 0
-    , used = Set.empty
+    , high = Set.empty
+    , inter = Set.empty
+    , lower = Set.empty
+    , academia = Set.empty
     , received = Set.empty
     , description = ""
     , price = 0.0
     }
 
+-- Encode a set as a JSON string
+encodeSet : Set Int -> E.Value
+encodeSet = E.string
+            << E.encode 0
+            << E.list E.int
+            << Set.toList
+
 encodeRow : Row -> E.Value
 encodeRow r = E.object
     [ ("distributor", E.int r.distributor)
-    , ("date", E.string
-               <| r.date)
+    , ("date", E.string r.date)
     , ("order", E.int r.order)
     , ("total", E.int r.total)
-    , ("used",  E.string
-                <| E.encode 0
-                <| E.list E.int
-                <| Set.toList
-                <| r.used)
-    , ("received",  E.string
-                    <| E.encode 0
-                    <| E.list E.int
-                    <| Set.toList
-                    <| r.received)
+    , ("lower", encodeSet r.lower)
+    , ("inter", encodeSet r.inter)
+    , ("high", encodeSet r.high)
+    , ("received", encodeSet r.received)
     , ("description", E.string r.description)
     , ("price", E.float r.price)
     ]
@@ -148,7 +154,10 @@ type alias IntermediateRow =
     , date: String
     , order: Int
     , total: Int
-    , used: String -- Not yet parsed the inner list
+    , lower: String -- Not yet parsed the inner list
+    , inter: String -- Not yet parsed the inner list
+    , high: String -- Not yet parsed the inner list
+    , academia: String -- Not yet parsed the inner list
     , received: String -- Not yet parsed the inner list
     , description: String
     , price: Float
@@ -163,20 +172,26 @@ decoderIntermediate =
     |> DP.required "date" D.string
     |> DP.required "order" D.int
     |> DP.required "total" D.int
-    |> DP.required "used" D.string
+    |> DP.required "lower" D.string
+    |> DP.required "inter" D.string
+    |> DP.required "high" D.string
+    |> DP.required "academia" D.string
     |> DP.required "received" D.string
     |> DP.required "description" D.string
     |> DP.required "price" D.float
 
 -- Now parse the inner representation to the outer one
 parseInner : IntermediateRow -> (UID, Row)
-parseInner { product, distributor, date, order, total, used, received, description, price } =
+parseInner { product, distributor, date, order, total, lower, inter, high, academia, received, description, price } =
     (product
     , { emptyRow | distributor = distributor
                  , date = date
                  , order = order
                  , total = total
-                 , used = decodeSet used
+                 , lower = decodeSet lower
+                 , inter = decodeSet inter
+                 , high = decodeSet high
+                 , academia = decodeSet academia
                  , received = decodeSet received
                  , description = description
                  , price = price
@@ -200,7 +215,7 @@ type alias Model =
     { entries : Catalog
     , field : String
     , files : List File
-    , isRecv : Bool
+    , mode : Mode
     }
 
 emptyModel : Model
@@ -208,35 +223,10 @@ emptyModel =
     { entries = Dict.empty
     , field = ""
     , files = []
-    , isRecv = True
+    , mode = Recv
     }
 
--- Add a box in the catalog of boxes
-addBox : Bool -> Barcode -> Catalog -> Catalog
-addBox isRecv code = Dict.update code.product (\m ->
-    case (isRecv, m) of
-        (True,  Just row) -> Just { row | received = Set.insert code.num row.received }
-        (False, Just row) -> Just { row | used = Set.insert code.num row.used }
-        (_, Nothing) -> Nothing
-    )
-
--- How many boxes where scanned for a UID
-numRecv : UID -> Catalog -> Int
-numRecv prod c =
-    case (Dict.get prod c) of
-        (Just row) -> Set.size row.received
-        (Nothing) -> 0
-
--- How many boxes where scanned for a UID
-numUsed : UID -> Catalog -> Int
-numUsed prod c =
-    case (Dict.get prod c) of
-        (Just row) -> Set.size row.used
-        (Nothing) -> 0
-
--- Where all the boxes used for that order
-isClosed : Row -> Bool
-isClosed r = Set.size r.received == Set.size r.used && Set.size r.received == r.total
+type Mode = High | Inter | Lower | Academia | Recv
 
 -- Row CSV parsing functionality
 parseRow : List String -> Maybe (UID, Row)
@@ -255,7 +245,10 @@ parseRow attr =
                     , description = desc ++ ", " ++ brand ++ ", " ++ pack_size
                     , total = unsafeInt csn
                     , received = Set.empty
-                    , used = Set.empty
+                    , lower = Set.empty
+                    , inter = Set.empty
+                    , high = Set.empty
+                    , academia = Set.empty
                     , price = unsafeFloat eprice
                  })
         (l) -> Nothing
@@ -265,15 +258,18 @@ filesDecoder : D.Decoder (List File)
 filesDecoder =
   D.at ["target","files"] (D.list File.decoder)
 
--- Scan a barcode received or used
-scan : Bool -> Barcode -> Catalog -> Catalog
-scan isRecv { product, num } =
+-- Scan a barcode
+scan : Mode -> Barcode -> Catalog -> Catalog
+scan mode { product, num } =
     Dict.update product (\m ->
-        case (isRecv, m) of
-            (True,  Just row) -> Just { row | received = Set.insert num row.received }
-            (False, Just row) -> Just { row | used = Set.insert num row.used }
-            (_, Nothing) -> Nothing
-    )
+      case (mode, m) of
+        (Lower, Just row) -> Just { row | lower = Set.insert num row.lower }
+        (Inter, Just row) -> Just { row | inter = Set.insert num row.inter }
+        (High, Just row) -> Just { row | high = Set.insert num row.high }
+        (Academia, Just row) -> Just { row | academia = Set.insert num row.academia }
+        (Recv,  Just row) -> Just { row | received = Set.insert num row.received }
+        (_, Nothing) -> Nothing
+      )
 
 -- Elm main app
 init : () -> ( Model, Cmd Msg )
@@ -293,7 +289,7 @@ type Msg
     | ImportCsv Csv
     | ImportDB Catalog
     | Scan
-    | ChangeMode Bool
+    | ChangeMode Mode
     | UpdateField String
     | Done
     | Print
@@ -350,7 +346,7 @@ update msg model =
             in
             ( { model
                 | field = ""
-                , entries = scan model.isRecv barcode model.entries
+                , entries = scan model.mode barcode model.entries
               }
             , Cmd.none
             )
@@ -359,8 +355,8 @@ update msg model =
             ( { model | field = str }
             , Cmd.none
             )
-        ChangeMode isrecv ->
-            ( { model | isRecv = isrecv }
+        ChangeMode mode ->
+            ( { model | mode = mode }
             , Cmd.none
             )
         Done ->
@@ -368,9 +364,6 @@ update msg model =
                     |> encode
                     |> db
             )
-
-stringFromBool : Bool -> String
-stringFromBool b = if b then "True" else "False"
 
 view : Model -> Html Msg
 view model =
@@ -380,7 +373,7 @@ view model =
             [ class "prodapp" ]
             [ viewUpload
             , lazy viewInput model.field
-            , lazy2 viewControls (List.length << Dict.values <| model.entries) model.isRecv
+            , lazy2 viewControls (List.length << Dict.values <| model.entries) model.mode
             , lazy viewEntries model.entries
             ]
         , infoFooter
@@ -452,8 +445,11 @@ viewEntries entries =
                     [ th [] [text "#"]
                     , th [] [text "ProductID"]
                     , th [] [text "Description"]
+                    , th [] [text "Lower"]
+                    , th [] [text "Inter"]
+                    , th [] [text "High"]
+                    , th [] [text "Academia"]
                     , th [] [text "Received"]
-                    , th [] [text "Used"]
                     ]
                   ]
                   , entries
@@ -465,43 +461,47 @@ viewEntries entries =
 -- VIEW INDIVIDUAL ENTRIES
 viewKeyedEntry : UID -> Row -> Html Msg
 viewKeyedEntry product row =
-    tr [ class (if isClosed row then "row-closed" else "row-open") ]
+    tr [ class "row" ]
        [ td [] [ text (String.fromInt row.total) ]
        , td [] [ text (String.fromInt product) ]
        , td [] [ text row.description ]
-       , td [] [ text << String.fromInt << Set.size <| row.used ]
+       , td [] [ text << String.fromInt << Set.size <| row.lower ]
+       , td [] [ text << String.fromInt << Set.size <| row.inter ]
+       , td [] [ text << String.fromInt << Set.size <| row.high ]
+       , td [] [ text << String.fromInt << Set.size <| row.academia ]
        , td [] [ text << String.fromInt << Set.size <| row.received ]
        ]
 
-viewControls : Int -> Bool -> Html Msg
-viewControls nitems isRecv =
+viewControls : Int -> Mode -> Html Msg
+viewControls nitems mode =
     let
         viewNum n =
             if n == 1 then
-                text (String.fromInt n ++ " item scanned")
+                text (String.fromInt n ++ " item ordered")
             else
-                text (String.fromInt n ++ " items scanned")
+                text (String.fromInt n ++ " items ordered")
     in
         footer
             [ class "footer"
             ]
             [ span
-                [ class "todo-count" ]
+                [ class "prod-count" ]
                 [ strong [] [
                     lazy viewNum nitems
                     ]
                 ]
-            , lazy viewControlsRecv isRecv
+            , lazy viewControlsRecv mode
             ]
 
-viewControlsRecv : Bool -> Html Msg
-viewControlsRecv isRecv =
+viewControlsRecv : Mode -> Html Msg
+viewControlsRecv mode =
     ul
         [ class "filters" ]
-        [ modeToggle True isRecv
-        , text " "
-        , modeToggle False isRecv
-        , text " "
+        [ modeToggle Lower mode, text " "
+        , modeToggle Inter mode, text " "
+        , modeToggle High mode, text " "
+        , modeToggle Academia mode, text " "
+        , modeToggle Recv mode, text " "
         , viewDone
         , text " "
         , viewPrint
@@ -519,15 +519,19 @@ viewPrint =
             [ onClick Print ]
             [ text "Print" ]
 
-modeToggle : Bool -> Bool -> Html Msg
-modeToggle isRecv actualb =
+modeToggle : Mode -> Mode -> Html Msg
+modeToggle mode actualm =
     let
-        uri = if isRecv then "#/received" else "#/outgoing"
-        str = if isRecv then "Incoming" else "Used"
+        (uri, str) = case mode of
+            (Lower) -> ("#/lower", "Lower")
+            (Inter) -> ("#/intermediate", "Intermediate")
+            (High) -> ("#/highschool", "Highschool")
+            (Academia) -> ("#/academia", "Academia")
+            (Recv) -> ("#/received", "Received")
     in
         li
-            [ onClick (ChangeMode isRecv) ]
-            [ a [ href uri, classList [ ( "selected", isRecv == actualb ) ] ]
+            [ onClick (ChangeMode mode) ]
+            [ a [ href uri, classList [ ( "selected", mode == actualm ) ] ]
                 [ text str ]
             ]
 

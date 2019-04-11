@@ -15,8 +15,11 @@ Row.init({
   date: Sequelize.STRING,
   order: Sequelize.INTEGER,
   description: Sequelize.STRING,
-  received: Sequelize.STRING, // Elm Set encoded as JSON serielized lists
-  used: Sequelize.STRING,     // Here too
+  received: Sequelize.STRING,   // Elm Set encoded as JSON serielized lists
+  lower: Sequelize.STRING,      // Here too
+  inter: Sequelize.STRING,      // Here too
+  middle: Sequelize.STRING,     // Here too
+  academia: Sequelize.STRING,   // Here too
   total: Sequelize.INTEGER,
   price: Sequelize.FLOAT
 }, { sequelize });
@@ -46,8 +49,11 @@ function commit(entries) {
              date: row.date,
              order: row.order,
              description: row.description,
+             lower: row.lower,
+             inter: row.inter,
+             high: row.high,
+             academia: row.academia,
              received: row.received,
-             used: row.used,
              total: row.total,
              price: row.price
            });

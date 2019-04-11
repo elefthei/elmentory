@@ -199,20 +199,7 @@ label[for='toggle-all'] {
     appearance: none;
 }
 
-.row-closed tr {
-    white-space: pre-line;
-    padding: 15px 60px 15px 15px;
-    margin-left: 30px;
-    display: block;
-    line-height: 1.2;
-    transition: color 0.4s;
-    background-color: #4CAF50;
-
-}
-
-.row-closed tr:hover {background-color: #4CAF80;}
-
-.row-open tr {
+.row tr {
     white-space: pre-line;
     padding: 15px 60px 15px 15px;
     margin-left: 30px;
@@ -222,7 +209,7 @@ label[for='toggle-all'] {
 
 }
 
-.row-open tr:hover {background-color: #f5f5f5;}
+.row tr:hover {background-color: #f5f5f5;}
 
 
 .prod-table li label tr {
@@ -266,12 +253,12 @@ label[for='toggle-all'] {
                 0 17px 2px -6px rgba(0, 0, 0, 0.2);
 }
 
-.todo-count {
+.prod-count {
     float: left;
     text-align: left;
 }
 
-.todo-count strong {
+.prod-count strong {
     font-weight: 300;
 }
 
