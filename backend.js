@@ -7,14 +7,16 @@ const sequelize = new Sequelize('inventory', 'sa', '@odyssey1', {
 });
 
 // Test connection
-sequelize
-  .authenticate()
-  .then(() => {
-    console.log('Connection has been established successfully.');
-  })
-  .catch(err => {
-    alert('Unable to connect to the database:', err);
-  });
+function check() {
+  sequelize
+    .authenticate()
+    .then(() => {
+      console.log('Connection has been established successfully.');
+    })
+    .catch(err => {
+      alert(err);
+    });
+}
 
 const Model = Sequelize.Model;
 

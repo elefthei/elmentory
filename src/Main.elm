@@ -445,11 +445,11 @@ viewEntries entries =
                     [ th [] [text "#"]
                     , th [] [text "ProductID"]
                     , th [] [text "Description"]
+                    , th [] [text "Received"]
                     , th [] [text "Lower"]
                     , th [] [text "Inter"]
                     , th [] [text "High"]
                     , th [] [text "Academia"]
-                    , th [] [text "Received"]
                     ]
                   ]
                   , entries
@@ -465,11 +465,11 @@ viewKeyedEntry product row =
        [ td [] [ text (String.fromInt row.total) ]
        , td [] [ text (String.fromInt product) ]
        , td [] [ text row.description ]
+       , td [] [ text << String.fromInt << Set.size <| row.received ]
        , td [] [ text << String.fromInt << Set.size <| row.lower ]
        , td [] [ text << String.fromInt << Set.size <| row.inter ]
        , td [] [ text << String.fromInt << Set.size <| row.high ]
        , td [] [ text << String.fromInt << Set.size <| row.academia ]
-       , td [] [ text << String.fromInt << Set.size <| row.received ]
        ]
 
 viewControls : Int -> Mode -> Html Msg
@@ -497,11 +497,11 @@ viewControlsRecv : Mode -> Html Msg
 viewControlsRecv mode =
     ul
         [ class "filters" ]
-        [ modeToggle Lower mode, text " "
+        [ modeToggle Recv mode, text " "
+        , modeToggle Lower mode, text " "
         , modeToggle Inter mode, text " "
         , modeToggle High mode, text " "
         , modeToggle Academia mode, text " "
-        , modeToggle Recv mode, text " "
         , viewDone
         , text " "
         , viewPrint
