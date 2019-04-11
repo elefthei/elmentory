@@ -6,6 +6,16 @@ const sequelize = new Sequelize('inventory', 'sa', '@odyssey1', {
     dialect: 'mssql'
 });
 
+// Test connection
+sequelize
+  .authenticate()
+  .then(() => {
+    console.log('Connection has been established successfully.');
+  })
+  .catch(err => {
+    alert('Unable to connect to the database:', err);
+  });
+
 const Model = Sequelize.Model;
 
 class Row extends Model {}
