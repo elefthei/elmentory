@@ -267,11 +267,11 @@ filesDecoder =
 
 -- Scan a barcode received or used
 scan : Bool -> Barcode -> Catalog -> Catalog
-scan isRecv code =
-    Dict.update code.product (\m ->
+scan isRecv { product, num } =
+    Dict.update product (\m ->
         case (isRecv, m) of
-            (True,  Just row) -> Just { row | received = Set.insert code.num row.received }
-            (False, Just row) -> Just { row | used = Set.insert code.num row.used }
+            (True,  Just row) -> Just { row | received = Set.insert num row.received }
+            (False, Just row) -> Just { row | used = Set.insert num row.used }
             (_, Nothing) -> Nothing
     )
 
@@ -293,7 +293,7 @@ type Msg
     | ImportCsv Csv
     | ImportDB Catalog
     | Scan
-    | ChangeMode String
+    | ChangeMode Bool
     | UpdateField String
     | Done
     | Print
@@ -337,7 +337,7 @@ update msg model =
                     (model, Cmd.none)
                 ((prod,r)::trows) ->
                     ({ model
-                        | entries = Dict.union (Dict.fromList ((prod,r)::trows)) model.entries
+                        | entries = Dict.fromList ((prod,r)::trows)
                      }
                      , importdb r.order -- Load DB entries for that order
                     )
@@ -359,11 +359,8 @@ update msg model =
             ( { model | field = str }
             , Cmd.none
             )
-        ChangeMode mode ->
-            ( { model | isRecv = case mode of
-                    ("recv") -> True
-                    (_) -> False
-              }
+        ChangeMode isrecv ->
+            ( { model | isRecv = isrecv }
             , Cmd.none
             )
         Done ->
@@ -371,6 +368,9 @@ update msg model =
                     |> encode
                     |> db
             )
+
+stringFromBool : Bool -> String
+stringFromBool b = if b then "True" else "False"
 
 view : Model -> Html Msg
 view model =
@@ -423,6 +423,7 @@ viewInput task =
             , name "newTodo"
             , onInput UpdateField
             , onEnter Scan
+            , onBlur (UpdateField "")
             ]
             []
         ]
@@ -508,12 +509,9 @@ viewControlsRecv isRecv =
 
 viewDone : Html Msg
 viewDone =
-    li
-        [ onClick Done ]
-        [ button
+        button
             [ onClick Done ]
             [ text "Done" ]
-        ]
 
 viewPrint : Html Msg
 viewPrint =
@@ -528,8 +526,8 @@ modeToggle isRecv actualb =
         str = if isRecv then "Incoming" else "Used"
     in
         li
-            [ onClick (ChangeMode str) ]
-            [ a [ href uri, classList [ ( "selected", True == actualb ) ] ]
+            [ onClick (ChangeMode isRecv) ]
+            [ a [ href uri, classList [ ( "selected", isRecv == actualb ) ] ]
                 [ text str ]
             ]
 

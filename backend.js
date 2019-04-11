@@ -1,8 +1,8 @@
 const Sequelize = require('sequelize');
 
 // Option 1: Passing parameters separately
-const sequelize = new Sequelize('inventory', 'sa', 'myPassw0rd', {
-    host: 'localhost',
+const sequelize = new Sequelize('inventory', 'sa', '@odyssey1', {
+    host: 'ocs-sql-inv.ocs.edu',
     dialect: 'mssql'
 });
 
@@ -37,8 +37,6 @@ function commit(entries) {
        }
      })
     .then(function(rows) {
-       console.log("Returned some rows");
-       console.log(JSON.stringify(rows));
        if (rows === undefined || rows.length == 0) {
          Object.keys(entries).forEach(function(key) {
            let row = entries[key];
