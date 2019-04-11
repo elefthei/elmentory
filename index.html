@@ -25,13 +25,11 @@ app.ports.print.subscribe(function(){
 
 // Commit data to DB
 app.ports.db.subscribe(function(data) {
-  console.log("DB!");
   commit(data);
 });
 
 // Load data from DB
 app.ports.importdb.subscribe(function(order) {
-  console.log("Load!");
   load(order, app.ports.load.send);
 });
 

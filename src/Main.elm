@@ -186,7 +186,7 @@ parseInner { product, distributor, date, order, total, used, received, descripti
 -- Decode JSON value to an Elm dictionary
 decode : E.Value -> Catalog
 decode v =
-    case (Dbg.log (E.encode 2 v) (D.decodeValue (D.list decoderIntermediate) v)) of
+    case D.decodeValue (D.list decoderIntermediate) v of
         (Ok inter) -> inter
                         |> List.map parseInner
                         |> Dict.fromList
@@ -529,7 +529,7 @@ modeToggle isRecv actualb =
     in
         li
             [ onClick (ChangeMode str) ]
-            [ a [ href uri, classList [ ( "selected", isRecv == actualb ) ] ]
+            [ a [ href uri, classList [ ( "selected", True == actualb ) ] ]
                 [ text str ]
             ]
 
