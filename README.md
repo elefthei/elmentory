@@ -6,21 +6,11 @@ All of the Elm code lives in `src/Main.elm` and relies on the [elm/html][html] l
 
 There also is a port handler set up in `index.html` to store the Elm application's state in `localStorage` on every update.
 
+## Dependencies
 
-## Build Instructions
+1. Install Elm https://guide.elm-lang.org/install.html
+2. Install NodeJS https://nodejs.org/en/download/
 
-Run the following command from the root of this project:
+## Build and Execute (Windows)
 
-```bash
-elm make src/Main.elm --output=elm.js
-```
-
-Then open `index.html` in your browser!
-
-## Electron
-
-Run as an application:
-
-```bash
-electron index.html
-```
+3. Run `run.bat`
